@@ -3,6 +3,7 @@
 const { basename } = require('path');
 const { pseudoexec } = require('pseudoexec');
 
+const kebabcaseKeys = require('kebabcase-keys');
 const which = require('which');
 const winston = require('winston');
 const yargs = require('yargs');
@@ -10,9 +11,38 @@ const yargs = require('yargs');
 const CML = require('../src/cml').default;
 const { jitsuEventPayload, send } = require('../src/analytics');
 
-const setupOpts = (opts) => {
+const aliasLegacyEnvironmentVariables = () => {
+  const legacyEnvironmentPrefixes = {
+    CML_CI: 'CML',
+    CML_PUBLISH: 'CML',
+    CML_RERUN_WORKFLOW: 'CML',
+    CML_SEND_COMMENT: 'CML',
+    CML_SEND_GITHUB_CHECK: 'CML',
+    CML_TENSORBOARD_DEV: 'CML',
+    // Remap environment variable prefixes so e.g. CML_COMMAND_OPTION becomes an
+    // an alias for CML_OPTION, regardless of the command it't referring to.
+    // See also https://github.com/yargs/yargs/issues/873#issuecomment-917441475
+    CML_ASSET: 'CML',
+    CML_CHECK: 'CML',
+    CML_COMMENT: 'CML',
+    CML_PR: 'CML',
+    CML_REPO: 'CML',
+    CML_RUNNER: 'CML',
+    CML_TENSORBOARD: 'CML',
+    CML_WORKFLOW: 'CML'
+  };
+
+  for (const [oldPrefix, newPrefix] of Object.entries(
+    legacyEnvironmentPrefixes
+  )) {
+    for (const key in process.env) {
+      if (key.startsWith(`${oldPrefix}_`))
+        process.env[key.replace(oldPrefix, newPrefix)] = process.env[key];
+    }
+  }
+
   const legacyEnvironmentVariables = {
-    TB_CREDENTIALS: 'CML_TENSORBOARD_DEV_CREDENTIALS',
+    TB_CREDENTIALS: 'CML_TENSORBOARD_CREDENTIALS',
     DOCKER_MACHINE: 'CML_RUNNER_DOCKER_MACHINE',
     RUNNER_IDLE_TIMEOUT: 'CML_RUNNER_IDLE_TIMEOUT',
     RUNNER_LABELS: 'CML_RUNNER_LABELS',
@@ -27,28 +57,11 @@ const setupOpts = (opts) => {
   for (const [oldName, newName] of Object.entries(legacyEnvironmentVariables)) {
     if (process.env[oldName]) process.env[newName] = process.env[oldName];
   }
+};
 
-  const legacyEnvironmentPrefixes = {
-    CML_CI: 'CML_REPO',
-    CML_PUBLISH: 'CML_ASSET',
-    CML_RERUN_WORKFLOW: 'CML_WORKFLOW',
-    CML_SEND_COMMENT: 'CML_COMMENT',
-    CML_SEND_GITHUB_CHECK: 'CML_CHECK',
-    CML_TENSORBOARD_DEV: 'CML_TENSORBOARD'
-  };
-
-  for (const [oldPrefix, newPrefix] of Object.entries(
-    legacyEnvironmentPrefixes
-  )) {
-    for (const key in process.env) {
-      if (key.startsWith(`${oldPrefix}_`))
-        process.env[key.replace(oldPrefix, newPrefix)] = process.env[key];
-    }
-  }
-
+const setupOpts = (opts) => {
   const { markdownfile } = opts;
   opts.markdownFile = markdownfile;
-  opts.cmlCommand = opts._[0];
   opts.cml = new CML(opts);
 };
 
@@ -76,9 +89,29 @@ const setupLogger = (opts) => {
   });
 };
 
-const setupTelemetry = async (opts) => {
-  const { cml, cmlCommand: action } = opts;
-  opts.telemetryEvent = await jitsuEventPayload({ action, cml });
+const setupTelemetry = async (opts, yargs) => {
+  const { cml, _: command } = opts;
+
+  const options = {};
+  for (const [name, option] of Object.entries(opts.options)) {
+    // Skip options with default values (i.e. not explicitly set by users)
+    if (opts[name] && !yargs.parsed.defaulted[name]) {
+      switch (option.telemetryData) {
+        case 'name':
+          options[name] = null;
+          break;
+        case 'full':
+          options[name] = opts[name];
+          break;
+      }
+    }
+  }
+
+  opts.telemetryEvent = await jitsuEventPayload({
+    action: command.join(':'),
+    extra: { options },
+    cml
+  });
 };
 
 const runPlugin = async ({ $0: executable, command }) => {
@@ -98,38 +131,42 @@ const handleError = (message, error) => {
 };
 
 (async () => {
+  aliasLegacyEnvironmentVariables();
   setupLogger({ log: 'debug' });
+
   try {
     await yargs
-      .env('CML')
-      .options({
-        log: {
-          type: 'string',
-          description: 'Logging verbosity',
-          choices: ['error', 'warn', 'info', 'debug'],
-          default: 'info',
-          group: 'Global Options:'
-        },
-        driver: {
-          type: 'string',
-          choices: ['github', 'gitlab', 'bitbucket'],
-          defaultDescription: 'infer from the environment',
-          description: 'Git provider where the repository is hosted',
-          group: 'Global Options:'
-        },
-        repo: {
-          type: 'string',
-          defaultDescription: 'infer from the environment',
-          description: 'Repository URL or slug',
-          group: 'Global Options:'
-        },
-        token: {
-          type: 'string',
-          defaultDescription: 'infer from the environment',
-          description: 'Personal access token',
-          group: 'Global Options:'
-        }
-      })
+      .options(
+        kebabcaseKeys({
+          log: {
+            type: 'string',
+            description: 'Logging verbosity',
+            choices: ['error', 'warn', 'info', 'debug'],
+            default: 'info',
+            group: 'Global Options:'
+          },
+          driver: {
+            type: 'string',
+            choices: ['github', 'gitlab', 'bitbucket'],
+            defaultDescription: 'infer from the environment',
+            description: 'Git provider where the repository is hosted',
+            group: 'Global Options:'
+          },
+          repo: {
+            type: 'string',
+            defaultDescription: 'infer from the environment',
+            description: 'Repository URL or slug',
+            group: 'Global Options:'
+          },
+          driverToken: {
+            type: 'string',
+            alias: 'token',
+            defaultDescription: 'infer from the environment',
+            description: 'CI driver personal/project access token (PAT)',
+            group: 'Global Options:'
+          }
+        })
+      )
       .global('version', false)
       .group('help', 'Global Options:')
       .fail(handleError)

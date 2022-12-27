@@ -6,7 +6,7 @@ const kebabcaseKeys = require('kebabcase-keys');
 const timestring = require('timestring');
 const winston = require('winston');
 
-const { randid, sleep } = require('../../../src/utils');
+const { exec, randid, sleep } = require('../../../src/utils');
 const tf = require('../../../src/terraform');
 
 let cml;
@@ -23,15 +23,7 @@ const shutdown = async (opts) => {
   RUNNER_SHUTTING_DOWN = true;
 
   const { error, cloud } = opts;
-  const {
-    name,
-    workdir = '',
-    tfResource,
-    noRetry,
-    reason,
-    destroyDelay
-  } = opts;
-  const tfPath = workdir;
+  const { name, tfResource, noRetry, reason, destroyDelay } = opts;
 
   const unregisterRunner = async () => {
     if (!RUNNER) return;
@@ -63,16 +55,28 @@ const shutdown = async (opts) => {
     }
   };
 
-  const destroyTerraform = async () => {
+  const destroyLeo = async () => {
     if (!tfResource) return;
 
     winston.info(`Waiting ${destroyDelay} seconds to destroy`);
     await sleep(destroyDelay);
 
+    const { cloud, id, region } = JSON.parse(
+      Buffer.from(tfResource, 'base64').toString('utf-8')
+    ).instances[0].attributes;
+
     try {
-      winston.debug(await tf.destroy({ dir: tfPath }));
+      return await exec(
+        'leo',
+        'destroy-runner',
+        '--cloud',
+        cloud,
+        '--region',
+        region,
+        id
+      );
     } catch (err) {
-      winston.error(`\tFailed destroying terraform: ${err.message}`);
+      winston.error(`\tFailed destroying with LEO: ${err.message}`);
     }
   };
 
@@ -85,7 +89,7 @@ const shutdown = async (opts) => {
     }
   }
 
-  await destroyTerraform();
+  await destroyLeo();
 
   if (error) throw error;
 
@@ -338,16 +342,8 @@ const run = async (opts) => {
     process.on(signal, () => shutdown({ ...opts, reason: signal }));
   });
 
-  const {
-    driver,
-    workdir,
-    cloud,
-    labels,
-    name,
-    reuse,
-    reuseIdle,
-    dockerVolumes
-  } = opts;
+  const { workdir, cloud, labels, name, reuse, reuseIdle, dockerVolumes } =
+    opts;
 
   await cml.repoTokenCheck();
 
@@ -375,7 +371,7 @@ const run = async (opts) => {
   }
 
   if (reuseIdle) {
-    if (driver === 'bitbucket') {
+    if (cml.driver === 'bitbucket') {
       throw new Error(
         'cml runner flag --reuse-idle is unsupported by bitbucket'
       );
@@ -396,7 +392,7 @@ const run = async (opts) => {
   if (dockerVolumes.length && cml.driver !== 'gitlab')
     winston.warn('Parameters --docker-volumes is only supported in gitlab');
 
-  if (driver === 'github')
+  if (cml.driver === 'github')
     winston.warn(
       'Github Actions timeout has been updated from 72h to 35 days. Update your workflow accordingly to be able to restart it automatically.'
     );
@@ -414,8 +410,11 @@ const run = async (opts) => {
   else await runLocal(opts);
 };
 
+const DESCRIPTION = 'Launch and register a self-hosted runner';
+const DOCSURL = 'https://cml.dev/doc/ref/runner';
+
 exports.command = 'launch';
-exports.description = 'Launch and register a self-hosted runner';
+exports.description = `${DESCRIPTION}\n${DOCSURL}`;
 
 exports.handler = async (opts) => {
   ({ cml } = opts);
@@ -426,7 +425,11 @@ exports.handler = async (opts) => {
   }
 };
 
-exports.builder = (yargs) => yargs.env('CML_RUNNER').options(exports.options);
+exports.builder = (yargs) =>
+  yargs
+    .env('CML')
+    .option('options', { default: exports.options, hidden: true })
+    .options(exports.options);
 
 exports.options = kebabcaseKeys({
   labels: {
@@ -444,7 +447,7 @@ exports.options = kebabcaseKeys({
   },
   name: {
     type: 'string',
-    default: `cml-${randid()}`,
+    default: `${randid()}`,
     defaultDescription: 'cml-{ID}',
     description: 'Name displayed in the repository once registered'
   },
@@ -462,13 +465,15 @@ exports.options = kebabcaseKeys({
     type: 'boolean',
     conflicts: ['single', 'reuseIdle'],
     description:
-      "Don't launch a new runner if an existing one has the same name or overlapping labels"
+      "Don't launch a new runner if an existing one has the same name or overlapping labels",
+    telemetryData: 'name'
   },
   reuseIdle: {
     type: 'boolean',
     conflicts: ['reuse', 'single'],
     description:
-      "Creates a new runner only if the matching labels don't exist or are already busy"
+      "Creates a new runner only if the matching labels don't exist or are already busy",
+    telemetryData: 'name'
   },
   workdir: {
     type: 'string',
@@ -484,7 +489,8 @@ exports.options = kebabcaseKeys({
   cloud: {
     type: 'string',
     choices: ['aws', 'azure', 'gcp', 'kubernetes'],
-    description: 'Cloud to deploy the runner'
+    description: 'Cloud to deploy the runner',
+    telemetryData: 'full'
   },
   cloudRegion: {
     type: 'string',
@@ -495,7 +501,8 @@ exports.options = kebabcaseKeys({
   cloudType: {
     type: 'string',
     description:
-      'Instance type. Choices: [m, l, xl]. Also supports native types like i.e. t2.micro'
+      'Instance type. Choices: [m, l, xl]. Also supports native types like i.e. t2.micro',
+    telemetryData: 'full'
   },
   cloudPermissionSet: {
     type: 'string',
@@ -518,7 +525,8 @@ exports.options = kebabcaseKeys({
     type: 'string',
     description:
       'GPU type. Choices: k80, v100, or native types e.g. nvidia-tesla-t4',
-    coerce: (val) => (val === 'nogpu' ? undefined : val)
+    coerce: (val) => (val === 'nogpu' ? undefined : val),
+    telemetryData: 'full'
   },
   cloudHddSize: {
     type: 'number',
@@ -537,12 +545,14 @@ exports.options = kebabcaseKeys({
     type: 'number',
     default: -1,
     description:
-      'Maximum spot instance bidding price in USD. Defaults to the current spot bidding price'
+      'Maximum spot instance bidding price in USD. Defaults to the current spot bidding price',
+    telemetryData: 'name'
   },
   cloudStartupScript: {
     type: 'string',
     description:
-      'Run the provided Base64-encoded Linux shell script during the instance initialization'
+      'Run the provided Base64-encoded Linux shell script during the instance initialization',
+    telemetryData: 'name'
   },
   cloudAwsSecurityGroup: {
     type: 'string',
@@ -580,3 +590,4 @@ exports.options = kebabcaseKeys({
       'Seconds to wait for collecting logs on failure (https://github.com/iterative/cml/issues/413)'
   }
 });
+exports.DOCSURL = DOCSURL;

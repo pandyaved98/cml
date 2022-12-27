@@ -18,14 +18,15 @@ const CHECK_TITLE = 'CML Report';
 process.env.RUNNER_ALLOW_RUNASROOT = 1;
 
 const {
-  GITHUB_REPOSITORY,
-  GITHUB_SHA,
-  GITHUB_REF,
-  GITHUB_HEAD_REF,
-  GITHUB_EVENT_NAME,
-  GITHUB_RUN_ID,
-  GITHUB_TOKEN,
   CI,
+  GITHUB_EVENT_NAME,
+  GITHUB_HEAD_REF,
+  GITHUB_REF,
+  GITHUB_REPOSITORY,
+  GITHUB_RUN_ID,
+  GITHUB_SHA,
+  GITHUB_TOKEN,
+  GITHUB_WORKFLOW,
   TPI_TASK
 } = process.env;
 
@@ -100,7 +101,7 @@ class Github {
     return user;
   }
 
-  async commentCreate(opts = {}) {
+  async commitCommentCreate(opts = {}) {
     const { report: body, commitSha } = opts;
     const { repos } = octokit(this.token, this.repo);
 
@@ -113,7 +114,7 @@ class Github {
     ).data.html_url;
   }
 
-  async commentUpdate(opts = {}) {
+  async commitCommentUpdate(opts = {}) {
     const { report: body, id } = opts;
     const { repos } = octokit(this.token, this.repo);
 
@@ -272,15 +273,20 @@ class Github {
       }
 
       await exec(
-        `${resolve(
-          workdir,
-          'config.sh'
-        )} --unattended --token "${await this.runnerToken()}" --url "${
-          this.repo
-        }" --name "${name}" --labels "${labels}" --work "${resolve(
-          workdir,
-          '_work'
-        )}" ${single ? ' --ephemeral' : ''}`
+        resolve(workdir, 'config.sh'),
+        '--unattended',
+        '--token',
+        await this.runnerToken(),
+        '--url',
+        this.repo,
+        '--name',
+        name,
+        '--labels',
+        labels,
+        '--work',
+        resolve(workdir, '_work'),
+        // adds `--ephemeral` to the array only if `single` is set
+        ...(single ? ['--ephemeral'] : [])
       );
 
       return spawn(resolve(workdir, 'run.sh'), {
@@ -450,7 +456,11 @@ class Github {
       });
       return true;
     } catch (error) {
-      if (error.message === 'Branch not protected') {
+      const errors = [
+        'Branch not protected',
+        'Upgrade to GitHub Pro or make this repository public to enable this feature.'
+      ];
+      if (errors.includes(error.message)) {
         return false;
       }
       throw error;
@@ -537,6 +547,57 @@ class Github {
         commit_message: commitBody
       });
     }
+  }
+
+  async issueCommentCreate(opts = {}) {
+    const { issueId, report } = opts;
+    const { owner, repo } = ownerRepo({ uri: this.repo });
+    const { issues } = octokit(this.token, this.repo);
+
+    const {
+      data: { html_url: htmlUrl }
+    } = await issues.createComment({
+      owner,
+      repo,
+      body: report,
+      issue_number: issueId
+    });
+
+    return htmlUrl;
+  }
+
+  async issueCommentUpdate(opts = {}) {
+    const { id, report } = opts;
+    if (!id) throw new Error('Id is missing updating comment');
+    const { owner, repo } = ownerRepo({ uri: this.repo });
+    const { issues } = octokit(this.token, this.repo);
+
+    const {
+      data: { html_url: htmlUrl }
+    } = await issues.updateComment({
+      owner,
+      repo,
+      body: report,
+      comment_id: id
+    });
+
+    return htmlUrl;
+  }
+
+  async issueComments(opts = {}) {
+    const { issueId } = opts;
+    const { owner, repo } = ownerRepo({ uri: this.repo });
+    const { issues } = octokit(this.token, this.repo);
+
+    const { data: comments } = await issues.listComments({
+      owner,
+      repo,
+      issue_number: issueId
+    });
+
+    return comments.map(({ id, body }) => {
+      return { id, body };
+    });
   }
 
   async prCommentCreate(opts = {}) {
@@ -690,15 +751,30 @@ class Github {
     repo.password = this.token;
     repo.username = 'token';
 
-    const command = `
-    git config --unset http.https://github.com/.extraheader;
-    git config user.name "${userName || this.userName}" &&
-    git config user.email "${userEmail || this.userEmail}" &&
-    git remote set-url ${remote} "${repo.toString()}${
-      repo.toString().endsWith('.git') ? '' : '.git'
-    }"`;
+    return [
+      ['git', 'config', '--unset', 'http.https://github.com/.extraheader'],
+      ['git', 'config', 'user.name', userName || this.userName],
+      ['git', 'config', 'user.email', userEmail || this.userEmail],
+      [
+        'git',
+        'remote',
+        'set-url',
+        remote,
+        repo.toString() + (repo.toString().endsWith('.git') ? '' : '.git')
+      ]
+    ];
+  }
 
-    return command;
+  get workflowId() {
+    return GITHUB_WORKFLOW;
+  }
+
+  get runId() {
+    return GITHUB_RUN_ID;
+  }
+
+  warn(message) {
+    console.error(`::warning::${message}`);
   }
 
   get sha() {
@@ -706,6 +782,16 @@ class Github {
       return github.context.payload.pull_request.head.sha;
 
     return GITHUB_SHA;
+  }
+
+  /**
+   * Returns the PR number if we're in a PR-related action event.
+   */
+  get pr() {
+    if (['pull_request', 'pull_request_target'].includes(GITHUB_EVENT_NAME)) {
+      return github.context.payload.pull_request.number;
+    }
+    return null;
   }
 
   get branch() {

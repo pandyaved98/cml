@@ -68,6 +68,11 @@ RUN curl --location https://apt.releases.hashicorp.com/gpg | sudo apt-key add - 
  && apt-get clean \
  && rm --recursive --force /var/lib/apt/lists/*
 
+# INSTALL LEO
+RUN curl --location https://github.com/iterative/terraform-provider-iterative/releases/latest/download/leo_linux_amd64 \
+ --output /usr/bin/leo \
+ && chmod +x /usr/bin/leo
+
 # INSTALL PYTHON
 ARG PYTHON_VERSION=3
 RUN add-apt-repository universe --yes \
@@ -116,6 +121,8 @@ WORKDIR ${CML_RUNNER_PATH}
 # SET SPECIFIC ENVIRONMENT VARIABLES
 ENV IN_DOCKER=1
 ENV RUNNER_ALLOW_RUNASROOT=1
+# Environment variable used by cml to detect it's been installed using the docker image.
+ENV _CML_CONTAINER_IMAGE=true
 
 # DEFINE ENTRY POINT AND COMMAND
 # Smart entrypoint understands commands like `bash` or `/bin/sh` but defaults to `cml`;

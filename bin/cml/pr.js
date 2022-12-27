@@ -7,7 +7,7 @@ exports.builder = (yargs) =>
   yargs
     .commandDir('./pr', { exclude: /\.test\.js$/ })
     .recommendCommands()
-    .env('CML_PR')
+    .env('CML')
     .options(
       Object.fromEntries(
         Object.entries(options).map(([key, value]) => [
@@ -16,5 +16,5 @@ exports.builder = (yargs) =>
         ])
       )
     )
-    .check(({ globpath }) => globpath)
+    .option('options', { default: options, hidden: true })
     .strict();

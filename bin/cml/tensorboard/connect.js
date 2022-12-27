@@ -3,6 +3,7 @@ const kebabcaseKeys = require('kebabcase-keys');
 const { spawn } = require('child_process');
 const { homedir } = require('os');
 const tempy = require('tempy');
+const winston = require('winston');
 
 const { exec, watermarkUri, sleep } = require('../../../src/utils');
 
@@ -28,8 +29,8 @@ const tbLink = async (opts = {}) => {
     chrono = chrono + chronoStep;
   }
 
-  const error = await fs.readFile(stderror, 'utf8');
-  throw new Error(`Tensorboard took too long. ${error}`);
+  winston.error(await fs.readFile(stderror, 'utf8'));
+  throw new Error(`Tensorboard took too long`);
 };
 
 const launchAndWaitLink = async (opts = {}) => {
@@ -51,8 +52,8 @@ const launchAndWaitLink = async (opts = {}) => {
   proc.unref();
   proc.on('exit', async (code, signal) => {
     if (code || signal) {
-      const error = await fs.readFile(stderrPath, 'utf8');
-      throw new Error(`Tensorboard failed with error: ${error}`);
+      winston.error(await fs.readFile(stderrPath, 'utf8'));
+      throw new Error(`Tensorboard failed with error ${code || signal}`);
     }
   });
 
@@ -72,8 +73,12 @@ const launchAndWaitLink = async (opts = {}) => {
 };
 
 exports.tbLink = tbLink;
+
+const DESCRIPTION = 'Connect to tensorboard.dev and get a link';
+const DOCSURL = 'https://cml.dev/doc/ref/tensorboard';
+
 exports.command = 'connect';
-exports.description = 'Connect to tensorboard.dev and get a link';
+exports.description = `${DESCRIPTION}\n${DOCSURL}`;
 
 exports.handler = async (opts) => {
   const { file, credentials, name, description } = opts;
@@ -82,7 +87,7 @@ exports.handler = async (opts) => {
   await fs.mkdir(path, { recursive: true });
   await fs.writeFile(`${path}/uploader-creds.json`, credentials);
 
-  const help = await exec('tensorboard dev upload -h');
+  const help = await exec('tensorboard', 'dev', 'upload', '-h');
   const extraParamsFound =
     (name || description) && help.indexOf('--description') >= 0;
   const extraParams = extraParamsFound
@@ -95,7 +100,10 @@ exports.handler = async (opts) => {
 };
 
 exports.builder = (yargs) =>
-  yargs.env('CML_TENSORBOARD').options(exports.options);
+  yargs
+    .env('CML')
+    .option('options', { default: exports.options, hidden: true })
+    .options(exports.options);
 
 exports.options = kebabcaseKeys({
   credentials: {
@@ -136,6 +144,9 @@ exports.options = kebabcaseKeys({
   },
   rmWatermark: {
     type: 'boolean',
-    description: 'Avoid CML watermark'
+    description: 'Avoid CML watermark',
+    hidden: true,
+    telemetryData: 'name'
   }
 });
+exports.DOCSURL = DOCSURL;

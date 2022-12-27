@@ -6,8 +6,12 @@ const {
   GIT_USER_EMAIL
 } = require('../../../src/cml');
 
-exports.command = 'create <glob path...>';
-exports.description = 'Create a pull request with the specified files';
+const DESCRIPTION = 'Create a pull request (committing any given paths first)';
+
+const DOCSURL = 'https://cml.dev/doc/ref/pr';
+
+exports.command = 'create [glob path...]';
+exports.description = `${DESCRIPTION}\n${DOCSURL}`;
 
 exports.handler = async (opts) => {
   const { cml, globpath: globs } = opts;
@@ -15,7 +19,11 @@ exports.handler = async (opts) => {
   console.log(link);
 };
 
-exports.builder = (yargs) => yargs.env('CML_PR').options(exports.options);
+exports.builder = (yargs) =>
+  yargs
+    .env('CML')
+    .option('options', { default: exports.options, hidden: true })
+    .options(exports.options);
 
 exports.options = kebabcaseKeys({
   md: {
@@ -74,3 +82,4 @@ exports.options = kebabcaseKeys({
     description: 'Git user name'
   }
 });
+exports.DOCSURL = DOCSURL;
